@@ -1,0 +1,55 @@
+# Entorno de PRODUCCIÓN en el servidor (/opt/isur-orders/compose.prod.yaml)
+# No se compila código: se usa una imagen publicada e identificada (IMAGE_REF).
+# Uso: IMAGE_REF=ghcr.io/usuario/isur-orders-api:1.0.0 docker compose -f compose.prod.yaml --env-file .env.prod up -d
+services:
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    image: ${IMAGE_REF:?Debe indicar IMAGE_REF}
+    command: ["node", "scripts/migrate.js"]
+    environment: &db-env
+      NODE_ENV: production
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_SSL: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    image: ${IMAGE_REF:?Debe indicar IMAGE_REF}
+    restart: unless-stopped
+    environment:
+      <<: *db-env
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health/ready || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:

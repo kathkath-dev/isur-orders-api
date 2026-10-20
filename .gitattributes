@@ -1,0 +1,5 @@
+# Scripts de shell siempre con saltos de línea Linux (se ejecutan en contenedores/servidor)
+*.sh text eol=lf
+*.sql text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

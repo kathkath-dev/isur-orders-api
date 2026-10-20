@@ -1,0 +1,61 @@
+name: Deploy to production
+
+# Ejecución MANUAL: un push a main nunca llega solo a producción.
+on:
+  workflow_dispatch:
+    inputs:
+      image_ref:
+        description: "Imagen a desplegar (ej. ghcr.io/usuario/isur-orders-api:1.0.0 o :sha-<commit>)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Los secretos viven en el GitHub Environment "production", no en el repositorio
+    environment: production
+
+    steps:
+      - name: Preparar llave SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PROD_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "${{ secrets.PROD_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Desplegar (pull -> migrate -> api -> smoke test)
+        env:
+          IMAGE_REF: ${{ inputs.image_ref }}
+        run: |
+          ssh -i ~/.ssh/id_deploy "${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }}" \
+            "IMAGE_REF='$IMAGE_REF' GHCR_USER='${{ secrets.GHCR_USER }}' GHCR_PAT='${{ secrets.GHCR_PAT }}' sh -s" <<'EOF'
+          set -eu
+          cd /opt/isur-orders
+
+          # 0) Guardar la imagen actual para rollback
+          docker compose -f compose.prod.yaml --env-file .env.prod images api --format json > previous_image.json || true
+
+          # 1) Autenticarse en el registro (si el paquete es privado)
+          if [ -n "$GHCR_PAT" ]; then echo "$GHCR_PAT" | docker login ghcr.io -u "$GHCR_USER" --password-stdin; fi
+
+          # 2) Descargar la imagen objetivo
+          export IMAGE_REF
+          docker compose -f compose.prod.yaml --env-file .env.prod pull migrate api
+
+          # 3) Migrar primero (proceso de una sola ejecución)
+          docker compose -f compose.prod.yaml --env-file .env.prod run --rm migrate
+
+          # 4) Solo si la migración terminó con código 0, actualizar la API
+          docker compose -f compose.prod.yaml --env-file .env.prod up -d --no-deps api
+
+          # 5) Smoke test
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS http://localhost:3000/health/ready && curl -fsS http://localhost:3000/version; then
+              echo "Despliegue verificado: $IMAGE_REF"; exit 0
+            fi
+            sleep 3
+          done
+          echo "Smoke test FALLÓ: ejecutar rollback a la imagen anterior"; exit 1
+          EOF
